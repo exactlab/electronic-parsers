@@ -19,9 +19,14 @@
 import pytest
 import numpy as np
 
+from electronicparsers.quantumespresso.parser import EFGParser
+from electronicparsers.utils.utils import (
+    convert_system_to_model_system,
+    convert_xcfunctional
+)
 from nomad.datamodel import EntryArchive
 from nomad.units import ureg
-from electronicparsers.quantumespresso import QuantumEspressoParser
+from electronicparsers.quantumespresso import QuantumEspressoParser, NMRParser
 
 
 def approx(value, abs=0, rel=1e-6):
@@ -33,13 +38,34 @@ def parser():
     return QuantumEspressoParser()
 
 
+@pytest.fixture(scope='module')
+def quartz_scf_fixtures(parser):
+    archive = EntryArchive()
+    parser.parse(
+        'tests/data/quantumespresso/quartz/quartz-scf.out',
+        archive,
+        None
+    )
+    model_system = convert_system_to_model_system(
+        system=archive.run[-1].system[-1]
+    )
+    xc_fun_list = convert_xcfunctional(
+        archive.run[-1].method[-1].dft.xc_functional
+    )
+    return model_system, xc_fun_list
+
+
 def RyB_to_N(value):
     return (value * ureg.rydberg / ureg.bohr).to_base_units().magnitude
 
 
 def test_scf(parser):
     archive = EntryArchive()
-    parser.parse('tests/data/quantumespresso/HO_scf/benchmark2.out', archive, None)
+    parser.parse(
+        'tests/data/quantumespresso/HO_scf/benchmark2.out', 
+        archive, 
+        None
+    )
 
     sec_run = archive.run[0]
     assert sec_run.program.version == '5.2.1 (svn rev. 11920)'
@@ -243,3 +269,237 @@ def test_noncolmag(parser):
         == (0.01 * ureg.rydberg).to_base_units().magnitude
     )
     assert sec_method.electronic.n_spin_channels is None
+
+
+def test_mainfile_keys(parser):
+    filepath1 = 'tests/data/quantumespresso/quartz/quartz-scf.out'
+    mainfile_keys1 = parser.get_mainfile_keys(filename=filepath1)
+    assert mainfile_keys1[0] == 'NMR'
+    assert mainfile_keys1[1] == 'EFG'
+    assert mainfile_keys1[2] == 'GIPAW_Workflow'
+
+    filepath2 = 'tests/data/quantumespresso/HO_scf/benchmark2.out'
+    mainfile_keys2 = parser.get_mainfile_keys(filename=filepath2)
+    assert mainfile_keys2
+
+
+def test_nmr_text(quartz_scf_fixtures):
+    archive = EntryArchive()
+    model_system, _ = quartz_scf_fixtures
+    parser = NMRParser(system=model_system, xc_func_list=None)
+    parser.parse(
+        filepath='tests/data/quantumespresso/quartz/quartz-nmr.out',
+        archive=archive,
+        logger=None)
+    
+    simulation = archive.data
+
+    # Program
+    assert simulation.program.name == 'GIPAW'
+    assert simulation.program.version == '7.4'
+
+    # ModelSystem
+    assert len(simulation.model_system) == 1
+    model_system = simulation.model_system[0]
+    assert model_system.is_representative
+    #   Cell ???
+    assert len(model_system.cell) == 1
+    atomic_cell = model_system.cell[0]
+    #       AtomsState
+    assert len(atomic_cell.atoms_state) == 9
+    labels = ['Si', 'Si', 'Si', 'O', 'O', 'O', 'O', 'O', 'O']
+    for index, symbol in enumerate(labels):
+        assert atomic_cell.atoms_state[index].chemical_symbol == symbol
+
+    # ModelMethod
+    assert len(simulation.model_method) == 1
+    assert simulation.model_method[0].m_def.name == 'DFT'
+    assert simulation.model_method[0].name == 'NMR'
+    dft = simulation.model_method[0]
+    assert len(dft.xc_functionals) == 2
+    assert dft.xc_functionals[0].name == 'correlation'
+    assert dft.xc_functionals[0].libxc_name == 'GGA_C_PBE'
+    assert dft.xc_functionals[1].name == 'exchange'
+    assert dft.xc_functionals[1].libxc_name == 'GGA_X_PBE'
+
+
+    # Outputs
+    assert len(simulation.outputs) == 1
+    output = simulation.outputs[0]
+    assert output.model_system_ref == model_system
+    assert output.model_method_ref == dft
+    #   Properties
+    assert len(output.m_xpath('magnetic_shieldings', dict=False)) == 9
+    for property_name in [
+        'magnetic_shieldings',
+        'magnetic_susceptibilities'
+    ]:
+        assert output.m_xpath(property_name, dict=False) is not None
+    #       MagneticShieldingTensor
+    for i, ms in enumerate(output.magnetic_shieldings):
+        assert ms.entity_ref.chemical_symbol == labels[i]
+
+
+def test_nmr_xml(quartz_scf_fixtures):
+    archive = EntryArchive()
+    model_system, xc_fun_list = quartz_scf_fixtures
+    parser = NMRParser(system=model_system, xc_func_list=xc_fun_list)
+    parser.parse(
+        filepath='tests/data/quantumespresso/quartz/quartz-nmr-gipaw.xml',
+        archive=archive,
+        logger=None)
+    
+    simulation = archive.data
+
+    # Program
+    assert simulation.program.name == 'GIPAW'
+    assert simulation.program.version == ''
+
+    # ModelSystem
+    assert len(simulation.model_system) == 1
+    model_system = simulation.model_system[0]
+    assert model_system.is_representative
+    #   Cell ???
+    assert len(model_system.cell) == 1
+    atomic_cell = model_system.cell[0]
+    #       AtomsState
+    assert len(atomic_cell.atoms_state) == 9
+    labels = ['Si', 'Si', 'Si', 'O', 'O', 'O', 'O', 'O', 'O']
+    for index, symbol in enumerate(labels):
+        assert atomic_cell.atoms_state[index].chemical_symbol == symbol
+
+    # ModelMethod
+    assert len(simulation.model_method) == 1
+    assert simulation.model_method[0].m_def.name == 'DFT'
+    assert simulation.model_method[0].name == 'NMR'
+    dft = simulation.model_method[0]
+    assert len(dft.xc_functionals) == 2
+    assert dft.xc_functionals[1].name == 'correlation'
+    assert dft.xc_functionals[1].libxc_name == 'GGA_C_PBE'
+    assert dft.xc_functionals[0].name == 'exchange'
+    assert dft.xc_functionals[0].libxc_name == 'GGA_X_PBE'
+
+
+    # Outputs
+    assert len(simulation.outputs) == 1
+    output = simulation.outputs[0]
+    assert output.model_system_ref == model_system
+    assert output.model_method_ref == dft
+    #   Properties
+    assert len(output.m_xpath('magnetic_shieldings', dict=False)) == 9
+    for property_name in [
+        'magnetic_shieldings',
+        'magnetic_susceptibilities'
+    ]:
+        assert output.m_xpath(property_name, dict=False) is not None
+    #       MagneticShieldingTensor
+    for i, ms in enumerate(output.magnetic_shieldings):
+        assert ms.entity_ref.chemical_symbol == labels[i]
+
+
+def test_efg_xml(quartz_scf_fixtures):
+    archive = EntryArchive()
+    model_system, xc_fun_list = quartz_scf_fixtures
+    parser = EFGParser(system=model_system, xc_func_list=xc_fun_list)
+    parser.parse(
+        filepath='tests/data/quantumespresso/quartz/quartz-efg-gipaw.xml',
+        archive=archive,
+        logger=None)
+    
+    simulation = archive.data
+    
+    # Program
+    assert simulation.program.name == 'GIPAW'
+    assert simulation.program.version == ''
+
+    # ModelSystem
+    assert len(simulation.model_system) == 1
+    model_system = simulation.model_system[0]
+    assert model_system.is_representative
+    #   Cell ???
+    assert len(model_system.cell) == 1
+    atomic_cell = model_system.cell[0]
+    #       AtomsState
+    assert len(atomic_cell.atoms_state) == 9
+    labels = ['Si', 'Si', 'Si', 'O', 'O', 'O', 'O', 'O', 'O']
+    for index, symbol in enumerate(labels):
+        assert atomic_cell.atoms_state[index].chemical_symbol == symbol
+
+    # ModelMethod
+    assert len(simulation.model_method) == 1
+    assert simulation.model_method[0].m_def.name == 'DFT'
+    assert simulation.model_method[0].name == 'EFG'
+    dft = simulation.model_method[0]
+    assert len(dft.xc_functionals) == 2
+    assert dft.xc_functionals[1].name == 'correlation'
+    assert dft.xc_functionals[1].libxc_name == 'GGA_C_PBE'
+    assert dft.xc_functionals[0].name == 'exchange'
+    assert dft.xc_functionals[0].libxc_name == 'GGA_X_PBE'
+
+
+    # Outputs
+    assert len(simulation.outputs) == 1
+    output = simulation.outputs[0]
+    assert output.model_system_ref == model_system
+    assert output.model_method_ref == dft
+    #   Properties
+    assert output.m_xpath('electric_field_gradients', dict=False) is not None
+
+
+def test_efg_text(quartz_scf_fixtures):
+    archive = EntryArchive()
+    model_system, _ = quartz_scf_fixtures
+    parser = EFGParser(system=model_system, xc_func_list=None)
+    parser.parse(
+        filepath='tests/data/quantumespresso/quartz/quartz-efg.out',
+        archive=archive,
+        logger=None)
+    
+    simulation = archive.data
+    
+    # Program
+    assert simulation.program.name == 'GIPAW'
+    assert simulation.program.version == '7.4'
+
+    # ModelSystem
+    assert len(simulation.model_system) == 1
+    model_system = simulation.model_system[0]
+    assert model_system.is_representative
+    #   Cell ???
+    assert len(model_system.cell) == 1
+    atomic_cell = model_system.cell[0]
+    #       AtomsState
+    assert len(atomic_cell.atoms_state) == 9
+    labels = ['Si', 'Si', 'Si', 'O', 'O', 'O', 'O', 'O', 'O']
+    for index, symbol in enumerate(labels):
+        assert atomic_cell.atoms_state[index].chemical_symbol == symbol
+
+    # ModelMethod
+    assert len(simulation.model_method) == 1
+    assert simulation.model_method[0].m_def.name == 'DFT'
+    assert simulation.model_method[0].name == 'EFG'
+    dft = simulation.model_method[0]
+    assert len(dft.xc_functionals) == 2
+    assert dft.xc_functionals[0].name == 'correlation'
+    assert dft.xc_functionals[0].libxc_name == 'GGA_C_PBE'
+    assert dft.xc_functionals[1].name == 'exchange'
+    assert dft.xc_functionals[1].libxc_name == 'GGA_X_PBE'
+
+
+    # Outputs
+    assert len(simulation.outputs) == 1
+    output = simulation.outputs[0]
+    assert output.model_system_ref == model_system
+    assert output.model_method_ref == dft
+    #   Properties
+    assert output.m_xpath('electric_field_gradients', dict=False) is not None
+    
+
+def test_system_conversion():
+    # TODO: write test for convert_system_to_model_system
+    pass
+
+
+def test_xcfunctional_conversion():
+    # TODO: write test for convert_xcfunctional
+    pass

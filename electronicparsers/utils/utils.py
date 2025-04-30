@@ -48,6 +48,18 @@ from .magres_workflow import (
     NMRMagResMethod,
     NMRMagResResults,
 )
+from .qe_gipaw_workflow import GIPAWQE
+from nomad.atomutils import Formula
+from runschema.system import System
+from runschema.method import XCFunctional
+from nomad_simulations.schema_packages.model_system import (
+    AtomicCell, 
+    ModelSystem, 
+    AtomsState, 
+    Symmetry, 
+    ChemicalFormula
+)
+from nomad_simulations.schema_packages.model_method import XCFunctional as XCFunctional_simu
 
 
 def get_files(pattern: str, filepath: str, stripname: str = '', deep: bool = True):
@@ -98,6 +110,122 @@ def numpy_type_to_json_serializable(quantity) -> Optional[Union[bool, int, float
     if isinstance(quantity, np.floating):
         return float(quantity)
     return None
+
+
+def create_atomic_cell_from_atoms(atoms_section) -> AtomicCell:
+    """
+    Converts `System.atoms` to an `AtomicCell` object.
+    """
+    atomic_cell = AtomicCell()
+    atomic_cell.name = 'AtomicCell'
+    atomic_cell.type = 'original'
+
+    # positions, velocities, lattice_vectors, periodic, supercell_matrix
+    if atoms_section.positions is not None:
+        atomic_cell.positions = atoms_section.positions
+    if atoms_section.velocities is not None:
+        atomic_cell.velocities = atoms_section.velocities
+    if atoms_section.lattice_vectors is not None:
+        atomic_cell.lattice_vectors = atoms_section.lattice_vectors
+    if atoms_section.periodic is not None:
+        atomic_cell.periodic_boundary_conditions = atoms_section.periodic
+    if atoms_section.supercell_matrix is not None:
+        atomic_cell.supercell_matrix = atoms_section.supercell_matrix
+
+    # AtomsState
+    if atoms_section.labels is not None:
+        for label in atoms_section.labels:
+            atom_state = AtomsState(chemical_symbol=label)
+            atomic_cell.atoms_state.append(atom_state)
+    elif atoms_section.atomic_numbers is not None:
+        for atomic_number in atoms_section.atomic_numbers:
+            atom_state = AtomsState(atomic_number=atomic_number)
+            atomic_cell.atoms_state.append(atom_state)
+
+    # Optionals
+    if atoms_section.equivalent_atoms is not None:
+        atomic_cell.equivalent_atoms = atoms_section.equivalent_atoms
+    if atoms_section.wyckoff_letters is not None:
+        atomic_cell.wyckoff_letters = atoms_section.wyckoff_letters
+
+    return atomic_cell
+
+
+def convert_system_to_model_system(system: System) -> ModelSystem:
+    """
+    Converts `System` object into a `ModelSystem`.
+    """
+
+    model_system = ModelSystem()
+    model_system.name = system.name
+    model_system.type = system.type
+    model_system.is_representative = system.is_representative
+
+    # AtomicCell
+    if system.atoms:
+        atomic_cell = create_atomic_cell_from_atoms(system.atoms)
+        model_system.cell.append(atomic_cell)
+
+    # ChemicalFormula
+    if system.chemical_composition_reduced or system.chemical_composition_hill:
+        chem_formula = ChemicalFormula()
+        if system.chemical_composition_reduced:
+            chem_formula.reduced = system.chemical_composition_reduced
+        if system.chemical_composition_hill:
+            chem_formula.hill = system.chemical_composition_hill
+        if system.chemical_composition_anonymous:
+            chem_formula.anonymous = system.chemical_composition_anonymous
+        model_system.chemical_formula = chem_formula
+    else:
+        # fallback: use ASE
+        try:
+            ase_atoms = system.atoms.to_ase()
+            f = Formula(ase_atoms.get_chemical_formula())
+            chem_formula = ChemicalFormula()
+            chem_formula.resolve_chemical_formulas(f)
+            model_system.chemical_formula = chem_formula
+        except Exception:
+            pass
+
+    # Symmetry
+    if system.symmetry:
+        for sym in system.symmetry:
+            sym_section = Symmetry()
+            for key in [
+                'bravais_lattice', 'hall_symbol', 'point_group_symbol',
+                'space_group_number', 'space_group_symbol',
+                'strukturbericht_designation', 'prototype_formula',
+                'prototype_aflow_id', 'origin_shift', 'transformation_matrix'
+            ]:
+                if hasattr(sym, key):
+                    setattr(sym_section, key, getattr(sym, key, None))
+            model_system.symmetry.append(sym_section)
+
+    # Bond list
+    if system.atoms and system.atoms.bond_list is not None:
+        model_system.bond_list = system.atoms.bond_list
+
+    return model_system
+
+
+def convert_xcfunctional(xcfunc: XCFunctional) -> list[XCFunctional_simu]:
+    """
+    Convers `method.XCFunctional` in una list[`model_method.XCFunctional`].
+    """
+    result = []
+
+    for kind in ['exchange', 'correlation', 'hybrid', 'contributions']:
+        section_list = getattr(xcfunc, kind, [])
+        for func in section_list:
+            if func is None:
+                continue
+            result.append(XCFunctional_simu(
+                libxc_name=func.name,
+                name=kind[:-1] if kind.endswith('s') else kind,
+                weight=func.weight if func.weight is not None else 1.0
+            ))
+
+    return result
 
 
 class BeyondDFTWorkflowsParser:
@@ -634,3 +762,77 @@ class BeyondDFTWorkflowsParser:
             workflow.m_add_sub_section(NMRMagRes.tasks, task)
 
         self.archive.workflow2 = workflow
+
+    def parse_gipaw_qe_workflow(
+        self,
+        qe_model_system: ModelSystem,
+        gipaw_list: list[EntryArchive],
+        gipaw_workflow_archive: EntryArchive
+    ):
+        """
+        Automatically parses the GIPAW workflow. Here, `self.archive` is the 
+        QE archive.
+
+        Args:
+            qe_model_system (ModelSystem): self.System converted to ModelSystem
+            nmr_archive (EntryArchive): the NMR archive
+            efg_archive (EntryArchive): the EFG archive
+            gipaw_workflow_archive (EntryArchive): the NMR workflow archive
+        """
+        workflow = GIPAWQE()
+        workflow.name = "GIPAW QE"
+
+        # Inputs
+        input_structure = qe_model_system
+        if input_structure:
+            workflow.m_add_sub_section(
+                GIPAWQE.inputs, 
+                Link(name='Input structure', section=input_structure)
+            )
+        
+        # Outputs
+        qe_calculation = extract_section(self.archive, ['run', 'calculation'])
+        workflow.m_add_sub_section(
+                GIPAWQE.outputs,
+                Link(name='Output DFT', section=qe_calculation),
+            )
+        
+        # QE task
+        if self.archive.workflow2:
+            task = TaskReference(task=self.archive.workflow2)
+            task.name = 'DFT'
+            # TODO check why this re-writting is necessary to not repeat 
+            # sections inside tasks
+            if input_structure:
+                task.inputs = [
+                    Link(name='Input structure', section=input_structure)
+                ]
+            if qe_calculation:
+                task.outputs = [
+                    Link(name='Output DFT calculation', section=qe_calculation)
+                ]
+            workflow.m_add_sub_section(GIPAWQE.tasks, task)
+
+        for archive in gipaw_list:
+            # Outputs
+            calculation = extract_section(archive, ["data", "outputs"])
+            name = archive.workflow2.name
+            workflow.m_add_sub_section(
+                GIPAWQE.outputs,
+                Link(name=f'Output {name}', section=calculation),
+            )
+
+            # Tasks
+            task = TaskReference(task=archive.workflow2)
+            task.name = name
+            if qe_calculation:
+                task.inputs = [
+                    Link(name='Output DFT calculation', section=qe_calculation)
+                ]
+            if calculation:
+                task.outputs = [
+                    Link(name=f'Output {name} calculation', section=calculation)
+                ]
+            workflow.m_add_sub_section(GIPAWQE.tasks, task)
+
+        gipaw_workflow_archive.workflow2 = workflow
