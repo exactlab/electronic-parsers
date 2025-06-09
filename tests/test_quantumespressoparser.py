@@ -387,11 +387,9 @@ def test_nmr_xml(quartz_scf_fixtures):
     assert output.model_method_ref == dft
     #   Properties
     assert len(output.m_xpath('magnetic_shieldings', dict=False)) == 9
-    for property_name in [
-        'magnetic_shieldings',
-        'magnetic_susceptibilities'
-    ]:
-        assert output.m_xpath(property_name, dict=False) is not None
+    assert output.magnetic_susceptibilities == []
+
+
     #       MagneticShieldingTensor
     for i, ms in enumerate(output.magnetic_shieldings):
         assert ms.entity_ref.chemical_symbol == labels[i]

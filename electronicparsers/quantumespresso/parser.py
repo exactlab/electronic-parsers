@@ -2918,9 +2918,6 @@ class GIPAWContentParser:
                     version = None
 
             self._results['software_version'] = [gi['NAME'], version]
-        
-        from devtools import debug
-        debug(self._results)
 
         # Output
         # susceptibility_low
@@ -3177,9 +3174,18 @@ class NMRParser(MatchingParser):
             outputs.magnetic_shieldings = ms
 
         # magnetic susceptibility
-        mag_sus = self.parse_magnetic_susceptibilities()
-        if len(mag_sus) > 0:
-            outputs.magnetic_susceptibilities = mag_sus
+        # NOTE: it is not possible to recover the correct value of the magnetic 
+        # susceptibility from the .xml file for GIPAW output before version 
+        # 7.4.1
+        if simulation.program.version is not None:
+            version_tuple = tuple(map(int, simulation.program.version.split(".")))
+        else:
+            version_tuple = (0, 0, 0)
+
+        if simulation.program.name == "GIPAW" and version_tuple >= (7, 4, 1):
+            mag_sus = self.parse_magnetic_susceptibilities()
+            if len(mag_sus) > 0:
+                outputs.magnetic_susceptibilities = mag_sus
 
         return outputs
 
