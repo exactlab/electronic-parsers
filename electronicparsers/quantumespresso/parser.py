@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Optional
 from typing import TYPE_CHECKING
 import xml.etree.ElementTree as ET
+from packaging.version import parse as parse_version
 
 from electronicparsers.utils.qe_gipaw_workflow import (
     EFGQE, 
@@ -2874,6 +2875,13 @@ def get_version_from_commit(repo_url: str, commit_hash: str) -> str:
         tags.sort(key=lambda s: list(map(int, s.strip('v').split('.'))))
 
         return tags[0]
+    
+def is_version_supported(version_str):
+    try:
+        version = parse_version(version_str) 
+        return version >= parse_version("7.4.1")
+    except Exception as e:
+        return False
 
 
 class GIPAWContentParser:
@@ -3177,12 +3185,7 @@ class NMRParser(MatchingParser):
         # NOTE: it is not possible to recover the correct value of the magnetic 
         # susceptibility from the .xml file for GIPAW output before version 
         # 7.4.1
-        if simulation.program.version is not None:
-            version_tuple = tuple(map(int, simulation.program.version.split(".")))
-        else:
-            version_tuple = (0, 0, 0)
-
-        if simulation.program.name == "GIPAW" and version_tuple >= (7, 4, 1):
+        if simulation.program.name == "GIPAW" and is_version_supported(simulation.program.version):
             mag_sus = self.parse_magnetic_susceptibilities()
             if len(mag_sus) > 0:
                 outputs.magnetic_susceptibilities = mag_sus
