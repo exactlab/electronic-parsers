@@ -17,6 +17,8 @@
 # limitations under the License.
 #
 import logging
+import subprocess
+import tempfile
 import numpy as np
 import re
 from datetime import datetime
@@ -109,6 +111,8 @@ from nomad_nmr_schema.schema_packages.schema_package import (
 )
 
 RE_FLOAT = r'[-+]?\d+\.\d*(?:[Ee][-+]\d+)?'
+
+QE_GIAPW_REPO = "https://github.com/dceresoli/qe-gipaw.git"
 
 # origin: espresso-5.4.0/Modules/funct.f90
 # update:
@@ -2851,6 +2855,27 @@ class QuantumEspressoOutParser(TextParser):
         ]
 
 
+def get_version_from_commit(repo_url: str, commit_hash: str) -> str:
+    with tempfile.TemporaryDirectory(prefix="gipaw_repo_") as tmpdir:
+        tmp_path = Path(tmpdir)
+        subprocess.run(
+            ['git', 'clone', repo_url, str(tmp_path)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        result = subprocess.run(
+            ['git', '-C', str(tmp_path), 'tag', '--contains', commit_hash],
+            capture_output=True, text=True, check=True
+        )
+
+        tags = result.stdout.strip().split('\n')
+        tags = [tag for tag in tags if tag]
+        tags.sort(key=lambda s: list(map(int, s.strip('v').split('.'))))
+
+        return tags[0]
+
+
 class GIPAWContentParser:
     def __init__(self):
         self.fileparser = None
@@ -2860,6 +2885,7 @@ class GIPAWContentParser:
         self.fileparser = RunFileParser(filepath, logger)
         self.fileparser.parse()
         self.handler = self.fileparser._results
+        self.logger = logger
 
     def get(self, key: str, default=None):
         if key not in self._results:
@@ -2881,7 +2907,20 @@ class GIPAWContentParser:
         # General info
         if 'software_version' not in self._results:
             gi = self.fileparser.results._data['gpw:gipaw[0]']['general_info[0]']['creator[0]']['_data'][0]
-            self._results['software_version'] = [gi['NAME'], gi['VERSION']]
+            if gi['NAME'] == "GIPAW":
+                try:
+                    version = get_version_from_commit(
+                        repo_url=QE_GIAPW_REPO, 
+                        commit_hash=gi["VERSION"]
+                    )
+                except Exception as e:
+                    self.logger.error(f"Error recovering software version: {e}")
+                    version = None
+
+            self._results['software_version'] = [gi['NAME'], version]
+        
+        from devtools import debug
+        debug(self._results)
 
         # Output
         # susceptibility_low
@@ -3163,10 +3202,16 @@ class NMRParser(MatchingParser):
 
         # program
         program_name_version  = self.parser.get('software_version', [])
-        simulation.program = self.program_class(
-            name=program_name_version[0],
-            version=program_name_version[1],
-        )
+        if program_name_version[1] is not None:
+            simulation.program = self.program_class(
+                name=program_name_version[0],
+                version=program_name_version[1],
+            )
+        else:
+            simulation.program = self.program_class(
+                name=program_name_version[0],
+            )
+
         archive.data = simulation
 
         # model system 
