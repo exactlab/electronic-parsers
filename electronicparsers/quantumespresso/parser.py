@@ -115,6 +115,8 @@ RE_FLOAT = r'[-+]?\d+\.\d*(?:[Ee][-+]\d+)?'
 
 QE_GIAPW_REPO = "https://github.com/dceresoli/qe-gipaw.git"
 
+MIN_SUS_SUPPORTED_VERSION = "7.4.1"
+
 # origin: espresso-5.4.0/Modules/funct.f90
 # update:
 # . New exchange-correlation functionals exist in
@@ -2879,7 +2881,7 @@ def get_version_from_commit(repo_url: str, commit_hash: str) -> str:
 def is_version_supported(version_str):
     try:
         version = parse_version(version_str) 
-        return version >= parse_version("7.4.1")
+        return version >= parse_version(MIN_SUS_SUPPORTED_VERSION)
     except Exception as e:
         return False
 
