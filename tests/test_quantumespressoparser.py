@@ -669,7 +669,7 @@ def test_nmr_xml(quartz_scf_fixtures):
 
     # Program
     assert simulation.program.name == 'GIPAW'
-    assert simulation.program.version == ''
+    assert simulation.program.version is None
 
     # ModelSystem
     assert len(simulation.model_system) == 1
@@ -719,7 +719,7 @@ def test_efg_xml(quartz_scf_fixtures):
     
     # Program
     assert simulation.program.name == 'GIPAW'
-    assert simulation.program.version == ''
+    assert simulation.program.version is None
 
     # ModelSystem
     assert len(simulation.model_system) == 1
